@@ -21,7 +21,10 @@ export default function RegisterPage() {
     if (form.password !== form.confirmPassword) { toast('Passwords do not match', 'error'); return; }
     setLoading(true);
     try {
-      const res: any = await authApi.register({ email: form.email, password: form.password, first_name: form.first_name, last_name: form.last_name });
+      // RegisterResponse returns only { user_id, requires_email_verification } — no tokens.
+      // Auto-login immediately after to get tokens + user profile.
+      await authApi.register({ email: form.email, password: form.password, first_name: form.first_name, last_name: form.last_name });
+      const res: any = await authApi.login(form.email, form.password);
       setUser(res.user);
       setTokens(res.tokens.access_token, res.tokens.refresh_token);
       toast('Registration successful', 'success');

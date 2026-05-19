@@ -22,7 +22,7 @@ interface User {
 
 const ADMIN_ROLES = ['superadmin', 'rector', 'admin'];
 const TEACHER_ROLES = ['professor', 'teacher', 'practice_teacher'];
-const COURSE_MANAGER_ROLES = ['superadmin', 'rector', 'admin', 'professor', 'teacher', 'head_of_department'];
+const COURSE_MANAGER_ROLES = ['superadmin', 'rector', 'admin', 'professor', 'teacher', 'head_of_department', 'student'];
 const GRADE_EDITOR_ROLES = ['superadmin', 'rector', 'admin', 'professor', 'teacher', 'practice_teacher', 'teaching_assistant'];
 const ATTENDANCE_MARKER_ROLES = ['superadmin', 'rector', 'admin', 'professor', 'teacher', 'practice_teacher'];
 const ANALYTICS_ROLES = ['superadmin', 'rector', 'admin', 'dean', 'head_of_department', 'curator', 'accountant', 'hr'];
