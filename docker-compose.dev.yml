@@ -80,6 +80,12 @@ services:
       WORKER_POOL_SIZE: "${WORKER_POOL_SIZE:-3}"
       JOB_RETRY_ATTEMPTS: "${JOB_RETRY_ATTEMPTS:-3}"
       DLQ_KEY: "dlq:notification"
+      MAILER: "${MAILER:-mock}"
+      SMTP_HOST: "${SMTP_HOST:-smtp.gmail.com}"
+      SMTP_PORT: "${SMTP_PORT:-587}"
+      SMTP_USERNAME: "${SMTP_USERNAME:-}"
+      SMTP_PASSWORD: "${SMTP_PASSWORD:-}"
+      SMTP_FROM: "${SMTP_FROM:-}"
     depends_on:
       nats:
         condition: service_healthy

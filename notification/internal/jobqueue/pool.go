@@ -1,68 +1,64 @@
 package jobqueue
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"log/slog"
 	"math"
-	"net/http"
 	"time"
 )
 
-// Job represents a notification task from a NATS event.
+// Job represents a notification task decoded from a NATS event.
 type Job struct {
-	EventType string
-	EntityID  string    // extracted from payload for idempotency
+	EventType  string
+	EntityID   string // used for idempotency key
 	OccurredAt time.Time
-	Payload   []byte
+	Payload    []byte
 }
 
-// IdempotencyKey returns SHA256(EventType+EntityID+OccurredAt) — per PLAN.md §Phase 3.
+// IdempotencyKey returns SHA256(EventType|EntityID|OccurredAt).
 func (j Job) IdempotencyKey() string {
 	h := sha256.New()
 	fmt.Fprintf(h, "%s|%s|%s", j.EventType, j.EntityID, j.OccurredAt.UTC().Format(time.RFC3339Nano))
 	return fmt.Sprintf("%x", h.Sum(nil))
 }
 
-// GatewayRequest is the JSON body sent to mock-gateway POST /notify.
-type GatewayRequest struct {
-	IdempotencyKey string `json:"idempotency_key"`
-	EventType      string `json:"event_type"`
-	Payload        string `json:"payload"` // hex-encoded
+// Mailer delivers a single notification job to whatever backend is configured.
+// Implementations live in notification/internal/mailer (smtp or mock).
+type Mailer interface {
+	Deliver(ctx context.Context, eventType string, payload []byte) error
 }
 
-// Config holds worker pool configuration.
-type Config struct {
-	GatewayURL   string
-	PoolSize     int
-	MaxRetries   int
-	DLQKey       string // Redis LPUSH key for dead-letter
-}
-
-// DLQWriter stores dead-letter entries. Implemented by Redis client.
+// DLQWriter stores dead-letter entries. Implemented by the Redis client in main.
 type DLQWriter interface {
 	LPush(ctx context.Context, key string, value string) error
 }
 
-// Pool is a fixed-size worker pool that dispatches notification jobs.
-type Pool struct {
-	cfg     Config
-	jobs    chan Job
-	dlq     DLQWriter
-	client  *http.Client
-	log     *slog.Logger
+// Config holds worker pool configuration.
+type Config struct {
+	PoolSize   int
+	MaxRetries int
+	DLQKey     string
 }
 
-// New creates a Pool and starts cfg.PoolSize workers.
-func New(cfg Config, dlq DLQWriter, log *slog.Logger) *Pool {
+// Pool is a fixed-size worker pool that dispatches notification jobs via a Mailer.
+type Pool struct {
+	cfg    Config
+	jobs   chan Job
+	dlq    DLQWriter
+	mailer Mailer
+	log    *slog.Logger
+}
+
+// New creates a Pool and starts cfg.PoolSize workers immediately.
+func New(cfg Config, mailer Mailer, dlq DLQWriter, log *slog.Logger) *Pool {
 	p := &Pool{
 		cfg:    cfg,
 		jobs:   make(chan Job, cfg.PoolSize*10),
 		dlq:    dlq,
-		client: &http.Client{Timeout: 5 * time.Second},
+		mailer: mailer,
 		log:    log,
 	}
 	for i := 0; i < cfg.PoolSize; i++ {
@@ -71,7 +67,7 @@ func New(cfg Config, dlq DLQWriter, log *slog.Logger) *Pool {
 	return p
 }
 
-// Submit enqueues a job (non-blocking, drops if channel full).
+// Submit enqueues a job non-blocking; drops if the channel is full.
 func (p *Pool) Submit(j Job) {
 	select {
 	case p.jobs <- j:
@@ -87,43 +83,32 @@ func (p *Pool) worker(id int) {
 	}
 }
 
-// dispatch calls mock-gateway with exponential backoff, dead-letters on failure.
 func (p *Pool) dispatch(j Job) {
 	key := j.IdempotencyKey()
-	body := GatewayRequest{
-		IdempotencyKey: key,
-		EventType:      j.EventType,
-		Payload:        fmt.Sprintf("%x", j.Payload),
-	}
-	bodyBytes, _ := json.Marshal(body)
 
 	var lastErr error
 	for attempt := 0; attempt <= p.cfg.MaxRetries; attempt++ {
 		if attempt > 0 {
-			backoff := time.Duration(math.Pow(2, float64(attempt-1))*float64(200*time.Millisecond))
+			backoff := time.Duration(math.Pow(2, float64(attempt-1)) * float64(200*time.Millisecond))
 			if backoff > 5*time.Second {
 				backoff = 5 * time.Second
 			}
 			time.Sleep(backoff)
 		}
 
-		resp, err := p.client.Post(p.cfg.GatewayURL+"/notify", "application/json", bytes.NewReader(bodyBytes))
-		if err != nil {
-			lastErr = err
-			p.log.Warn("gateway POST failed", "event", j.EventType, "attempt", attempt, "err", err)
-			continue
-		}
-		resp.Body.Close()
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		err := p.mailer.Deliver(ctx, j.EventType, j.Payload)
+		cancel()
 
-		if resp.StatusCode == http.StatusOK {
+		if err == nil {
 			p.log.Info("notification delivered", "event", j.EventType, "key", key, "attempt", attempt)
 			return
 		}
-		lastErr = fmt.Errorf("gateway returned %d", resp.StatusCode)
-		p.log.Warn("gateway returned error", "event", j.EventType, "status", resp.StatusCode, "attempt", attempt)
+		lastErr = err
+		p.log.Warn("notification failed", "event", j.EventType, "attempt", attempt, "err", err)
 	}
 
-	// dead-letter
+	// Dead-letter: push to Redis and log to stderr.
 	p.log.Error("notification dead-lettered", "event", j.EventType, "key", key, "err", lastErr)
 	dlqEntry, _ := json.Marshal(map[string]any{
 		"event_type":      j.EventType,
@@ -139,7 +124,6 @@ func (p *Pool) dispatch(j Job) {
 			p.log.Error("dlq push failed", "err", err)
 		}
 	}
-	// always log to stderr (AP3 §7.2 format)
 	fmt.Printf(`{"level":"ERROR","time":"%s","msg":"dead_letter","event_type":"%s","key":"%s"}%s`,
 		time.Now().UTC().Format(time.RFC3339), j.EventType, key, "\n")
 }
