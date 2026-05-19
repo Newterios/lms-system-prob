@@ -219,3 +219,11 @@ Grafana dashboard: **EDULMS v2 — Service Overview**
 ---
 
 *See [PLAN.md](PLAN.md) for full scope, team split, rubric trace, and API contracts.*
+
+## Team
+
+| Name | GitHub | Role |
+|------|--------|------|
+| Aitbek | [@Newterios](https://github.com/Newterios) | Auth service, API Gateway, Assessment |
+| Rakhat | [@RakhatBalga](https://github.com/RakhatBalga) | Course service, Frontend |
+| Syrym | Syrym | Notification, Observability, CI |
